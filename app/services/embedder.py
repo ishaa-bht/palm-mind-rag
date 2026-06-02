@@ -1,51 +1,51 @@
-import google.generativeai as genai
+import asyncio
+from functools import lru_cache
+
+from sentence_transformers import SentenceTransformer
+
 from app.core.config import settings
 
-# Configure Gemini client once at module level
-genai.configure(api_key=settings.gemini_api_key)
+QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 
-EMBEDDING_MODEL = "models/gemini-embedding-001"
+
+@lru_cache(maxsize=1)
+def _get_model() -> SentenceTransformer:
+    """Load the local embedding model once when it is first needed."""
+    model = SentenceTransformer(
+        settings.embedding_model_name,
+        device=settings.embedding_device,
+    )
+    actual_dim = model.get_embedding_dimension()
+    if actual_dim != settings.embedding_dim:
+        raise ValueError(
+            f"Embedding model '{settings.embedding_model_name}' produces "
+            f"{actual_dim} dimensions, but EMBEDDING_DIM is "
+            f"{settings.embedding_dim}."
+        )
+    return model
+
+
+def _encode(texts: list[str]) -> list[list[float]]:
+    """Encode text locally without blocking the FastAPI event loop."""
+    vectors = _get_model().encode(
+        texts,
+        batch_size=settings.embedding_batch_size,
+        show_progress_bar=False,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+    )
+    return vectors.tolist()
 
 
 async def embed_texts(texts: list[str]) -> list[list[float]]:
-    """
-    Generate embeddings for a list of text chunks using Gemini.
+    """Generate local BGE embeddings for document text."""
+    if not texts:
+        return []
 
-    Args:
-        texts: List of text strings to embed
-
-    Returns:
-        List of embedding vectors (each vector is list[float] of dim 768)
-    """
-    embeddings: list[list[float]] = []
-
-    for text in texts:
-        result = genai.embed_content(
-            model=EMBEDDING_MODEL,
-            content=text,
-            task_type="retrieval_document",
-            output_dimensionality=settings.embedding_dim,
-        )
-        embeddings.append(result["embedding"])
-
-    return embeddings
+    return await asyncio.to_thread(_encode, texts)
 
 
 async def embed_query(text: str) -> list[float]:
-    """
-    Generate embedding for a single query string.
-    Uses retrieval_query task type for better search results.
-
-    Args:
-        text: Query string from user
-
-    Returns:
-        Single embedding vector of dim 768
-    """
-    result = genai.embed_content(
-        model=EMBEDDING_MODEL,
-        content=text,
-        task_type="retrieval_query",
-        output_dimensionality=settings.embedding_dim,
-    )
-    return result["embedding"]
+    """Generate a local BGE retrieval embedding for a user query."""
+    vectors = await asyncio.to_thread(_encode, [f"{QUERY_PREFIX}{text}"])
+    return vectors[0]

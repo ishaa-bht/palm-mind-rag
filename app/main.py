@@ -1,9 +1,19 @@
+import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from google.api_core.exceptions import (
+    GoogleAPIError,
+    PermissionDenied,
+    ResourceExhausted,
+)
 
 from app.api import ingest, chat
 from app.services.vector_store import init_qdrant_collection
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -28,6 +38,31 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(GoogleAPIError)
+async def handle_google_api_error(
+    request: Request,
+    exc: GoogleAPIError,
+) -> JSONResponse:
+    """Return actionable JSON when Gemini rejects an upstream request."""
+    logger.exception("Gemini API request failed for %s", request.url.path)
+
+    if isinstance(exc, PermissionDenied):
+        detail = (
+            "Gemini API access was denied. Check GEMINI_API_KEY and the "
+            "Google AI project status."
+        )
+    elif isinstance(exc, ResourceExhausted):
+        detail = (
+            "Gemini API quota was exhausted. Wait for the quota window to "
+            "reset or use a project with available quota."
+        )
+    else:
+        detail = "Gemini API request failed. Please try again later."
+
+    return JSONResponse(status_code=503, content={"detail": detail})
+
 
 # ── CORS Middleware ──────────────────────────────────────────────────
 app.add_middleware(

@@ -26,7 +26,7 @@ def normalize_retrieved_text(text: str) -> str:
 async def init_qdrant_collection() -> None:
     """
     Create Qdrant collection on startup if it doesn't exist.
-    Vector size 768 matches the configured Gemini embedding output.
+    Vector size 768 matches the configured local BGE embedding output.
     """
     existing = await client.get_collections()
     names = [col.name for col in existing.collections]
@@ -35,12 +35,21 @@ async def init_qdrant_collection() -> None:
         await client.create_collection(
             collection_name=settings.qdrant_collection_name,
             vectors_config=VectorParams(
-                size=settings.embedding_dim,   # 768 for Gemini
+                size=settings.embedding_dim,
                 distance=Distance.COSINE,
             ),
         )
         print(f"Qdrant collection '{settings.qdrant_collection_name}' created.")
     else:
+        collection = await client.get_collection(settings.qdrant_collection_name)
+        vectors = collection.config.params.vectors
+        if isinstance(vectors, dict) or vectors.size != settings.embedding_dim:
+            raise ValueError(
+                f"Qdrant collection '{settings.qdrant_collection_name}' does "
+                f"not match the configured {settings.embedding_dim}-dimension "
+                "embedding model. Configure a new QDRANT_COLLECTION_NAME and "
+                "re-ingest documents."
+            )
         print(f"Qdrant collection '{settings.qdrant_collection_name}' already exists.")
 
 

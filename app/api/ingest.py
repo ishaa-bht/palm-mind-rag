@@ -61,7 +61,7 @@ async def ingest_document(
         1. Validate file type (.pdf or .txt)
         2. Extract text from file
         3. Chunk text using selected strategy
-        4. Generate embeddings via Gemini
+        4. Generate embeddings locally with sentence-transformers
         5. Store vectors in Qdrant
         6. Save document metadata in PostgreSQL
         7. Return IngestResponse

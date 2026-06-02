@@ -104,8 +104,8 @@
 \begin{abstract}
 RAG Automation API is a modular FastAPI backend for document ingestion and
 retrieval-augmented generation. It accepts PDF and TXT documents, extracts and
-chunks their text using a selectable strategy, generates Gemini embeddings, and
-stores vectors in Qdrant. The conversational API retrieves relevant context
+chunks their text using a selectable strategy, generates local BGE embeddings,
+and stores vectors in Qdrant. The conversational API retrieves relevant context
 without using \texttt{RetrievalQAChain}, preserves multi-turn chat history in
 Redis, and uses an LLM to detect and persist interview bookings in PostgreSQL.
 \end{abstract}
@@ -139,7 +139,7 @@ directly in the application services.
     \midrule
     API framework     & FastAPI                 & Async REST endpoints \\
     LLM               & Gemini 2.5 Flash        & Answers and booking extraction \\
-    Embeddings        & Gemini embedding-001    & 768-dimensional vectors \\
+    Embeddings        & BAAI/bge-base-en-v1.5   & Local 768-dimensional vectors \\
     Vector database   & Qdrant                  & Similarity search \\
     Session memory    & Redis                   & Multi-turn chat history \\
     Relational DB     & PostgreSQL              & Metadata and bookings \\
@@ -159,10 +159,10 @@ directly in the application services.
     \texttt{recursive} or \texttt{semantic} chunking.
     \item FastAPI validates the extension and extracts text.
     \item The chunker splits extracted text with the selected strategy.
-    \item Gemini generates a vector for each chunk using the
-    \texttt{retrieval\_document} task type.
+    \item The local BGE sentence-transformers model generates a vector for each
+    chunk on CPU.
     \item Qdrant stores vectors with document ID, filename, strategy, chunk
-    index, chunk count, and normalized chunk text.
+    index, chunk count, and chunk text.
     \item PostgreSQL stores document metadata.
 \end{enumerate}
 
@@ -175,8 +175,8 @@ directly in the application services.
     intent and the required fields.
     \item If a complete booking is found, PostgreSQL stores it and the API
     returns a confirmation.
-    \item Otherwise, Gemini embeds the query using the
-    \texttt{retrieval\_query} task type.
+    \item Otherwise, the local BGE model embeds the query with its retrieval
+    instruction prefix.
     \item Qdrant compares the query vector with stored chunk vectors using
     cosine similarity and returns the five most similar chunks.
     \item Retrieved text is normalized before prompt construction so legacy
@@ -208,6 +208,8 @@ source venv/bin/activate
 pip install -r requirements.txt
 \end{lstlisting}
 
+The local BGE model is downloaded and cached automatically on first use.
+
 Create a \texttt{.env} file in the project root:
 
 \begin{lstlisting}
@@ -215,9 +217,12 @@ GEMINI_API_KEY=your_gemini_api_key_here
 DATABASE_URL=postgresql+asyncpg://palmuser:palmpass@localhost:5433/palmdb
 QDRANT_HOST=localhost
 QDRANT_PORT=6333
-QDRANT_COLLECTION_NAME=documents
+QDRANT_COLLECTION_NAME=documents_bge_base_en_v1_5
 REDIS_URL=redis://localhost:6379
 APP_ENV=development
+EMBEDDING_MODEL_NAME=BAAI/bge-base-en-v1.5
+EMBEDDING_DEVICE=cpu
+EMBEDDING_BATCH_SIZE=32
 EMBEDDING_DIM=768
 \end{lstlisting}
 
@@ -230,6 +235,12 @@ uvicorn app.main:app --reload
 \end{lstlisting}
 
 Swagger UI is available at \texttt{http://localhost:8000/docs}.
+
+\subsection{Gemini access errors}
+
+If chat returns \texttt{503 Service Unavailable} with a Gemini access-denied
+message, verify \texttt{GEMINI\_API\_KEY} and the Google AI project status,
+then restart the API. This indicates an upstream project-access problem.
 
 \section{Module reference}
 
@@ -244,9 +255,9 @@ Swagger UI is available at \texttt{http://localhost:8000/docs}.
     \path{app/api/chat.py} & Implements conversational retrieval, Redis
     memory, LLM answers, and booking persistence. \\
     \path{app/services/chunker.py} & Provides recursive structure-aware chunks
-    and Gemini-powered semantic topic chunks. \\
+    and locally embedded semantic topic chunks. \\
     \path{app/services/embedder.py} & Generates document and query
-    embeddings with Gemini. \\
+    embeddings locally with BAAI/bge-base-en-v1.5 on CPU. \\
     \path{app/services/vector_store.py} & Creates the Qdrant collection,
     upserts chunks with retrieval metadata, normalizes retrieved PDF text, and
     returns the top five matches using cosine similarity. \\
@@ -269,14 +280,15 @@ Swagger UI is available at \texttt{http://localhost:8000/docs}.
     \midrule
     \texttt{recursive} & Paragraph, sentence, and word fallbacks; maximum 300
     words with 45-word overlap & General-purpose ingestion \\
-    \texttt{semantic} & Gemini sentence embeddings; cosine boundary threshold
-    of 0.65; one-sentence overlap & Multi-topic reports and research \\
+    \texttt{semantic} & Batched local BGE sentence embeddings; cosine boundary
+    threshold of 0.65; recursive fallback for oversized chunks & Multi-topic
+    reports and research \\
     \bottomrule
 \end{tabularx}
 
 \subsection{Vector retrieval}
 
-Qdrant stores one 768-dimensional Gemini embedding for each document chunk.
+Qdrant stores one 768-dimensional local BGE embedding for each document chunk.
 During chat, the application embeds the user's query and performs a
 \textbf{cosine-similarity search}. Qdrant ranks stored chunk vectors by their
 directional similarity to the query vector, and the API sends the top five
@@ -331,7 +343,7 @@ Uploads and processes a document using multipart form data.
 \end{tabularx}
 
 \begin{lstlisting}[language=bash]
-curl -s -X POST http://localhost:8000/api/v1/ingest \
+curl -sS -X POST http://localhost:8000/api/v1/ingest \
   -F "file=@test_doc.txt" \
   -F "strategy=recursive" \
   | python -m json.tool
@@ -342,7 +354,7 @@ curl -s -X POST http://localhost:8000/api/v1/ingest \
 Answers questions using retrieved document context and Redis session history.
 
 \begin{lstlisting}[language=bash]
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"user-001","query":"What skills does John have?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -364,17 +376,17 @@ curl -s -X POST http://localhost:8000/api/v1/chat \
 \subsection{Health check}
 
 \begin{lstlisting}[language=bash]
-curl -s http://localhost:8000/health | python -m json.tool
+curl -sS http://localhost:8000/health | python -m json.tool
 \end{lstlisting}
 
 \subsection{Ingestion with both strategies}
 
 \begin{lstlisting}[language=bash]
-curl -s -X POST http://localhost:8000/api/v1/ingest \
+curl -sS -X POST http://localhost:8000/api/v1/ingest \
   -F "file=@test_doc.txt" -F "strategy=recursive" \
   | python -m json.tool
 
-curl -s -X POST http://localhost:8000/api/v1/ingest \
+curl -sS -X POST http://localhost:8000/api/v1/ingest \
   -F "file=@test_doc.txt" -F "strategy=semantic" \
   | python -m json.tool
 \end{lstlisting}
@@ -382,7 +394,7 @@ curl -s -X POST http://localhost:8000/api/v1/ingest \
 \subsection{Retrieval-grounded answer}
 
 \begin{lstlisting}[language=bash]
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"test-001","query":"What skills does John have?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -393,7 +405,7 @@ curl -s -X POST http://localhost:8000/api/v1/chat \
 Use the same \texttt{session\_id} for a follow-up question:
 
 \begin{lstlisting}[language=bash]
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"test-001","query":"Where did he work?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -402,7 +414,7 @@ curl -s -X POST http://localhost:8000/api/v1/chat \
 \subsection{Interview booking}
 
 \begin{lstlisting}[language=bash]
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"booking-001","query":"Book an interview for Jane Doe, jane@example.com, on 2026-06-10 at 14:00."}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -422,7 +434,7 @@ The repository includes \texttt{sample.pdf} for a copy-pasteable demonstration
 of document ingestion and grounded question answering. Ingest it with:
 
 \begin{lstlisting}[language=bash]
-curl -s -X POST http://localhost:8000/api/v1/ingest \
+curl -sS -X POST http://localhost:8000/api/v1/ingest \
   -F "file=@sample.pdf" \
   -F "strategy=recursive" \
   | python -m json.tool
@@ -443,7 +455,7 @@ Then reuse \texttt{sample-pdf-session} while asking:
 For example:
 
 \begin{lstlisting}[language=bash]
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"sample-pdf-session","query":"How did Holec define learner autonomy?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -462,8 +474,11 @@ curl -s -X POST http://localhost:8000/api/v1/chat \
     \item \textbf{PostgreSQL persistence}: structured document and booking
     records are managed with SQLAlchemy and Alembic.
     \item \textbf{Selectable chunking}: callers can choose efficient recursive
-    boundary-aware chunks or higher-cost semantic topic detection based on
+    boundary-aware chunks or topic-aware semantic detection based on
     retrieval-quality needs.
+    \item \textbf{Local semantic analysis}: semantic mode embeds sentences in
+    CPU batches of 32 texts using BAAI/bge-base-en-v1.5. This removes
+    embedding API cost and rate limits while retaining topic-aware boundaries.
 \end{itemize}
 
 \section{Conclusion}

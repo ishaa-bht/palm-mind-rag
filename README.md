@@ -9,7 +9,8 @@ A production-grade Retrieval-Augmented Generation (RAG) backend built with FastA
 | Layer | Technology |
 |---|---|
 | API | FastAPI |
-| LLM & Embeddings | Google Gemini 2.5 Flash / gemini-embedding-001 |
+| LLM | Google Gemini 2.5 Flash |
+| Embeddings | Local sentence-transformers `BAAI/bge-base-en-v1.5` on CPU |
 | Vector Store | Qdrant |
 | Session Memory | Redis |
 | Database | PostgreSQL + SQLAlchemy (async) + Alembic |
@@ -34,7 +35,7 @@ app/
 ├── services/
 │   ├── booking.py       # Gemini-powered booking intent extraction
 │   ├── chunker.py       # Recursive and semantic chunking strategies
-│   ├── embedder.py      # Gemini embedding generation
+│   ├── embedder.py      # Local BGE embedding generation
 │   ├── llm.py           # RAG answer generation
 │   ├── memory.py        # Redis session history management
 │   └── vector_store.py  # Qdrant collection and similarity search
@@ -65,6 +66,8 @@ source venv/bin/activate      # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+The local BGE model is downloaded and cached automatically on first use.
+
 ### 2. Configure environment variables
 
 Create a `.env` file in the project root:
@@ -74,9 +77,12 @@ GEMINI_API_KEY=your_gemini_api_key_here
 DATABASE_URL=postgresql+asyncpg://palmuser:palmpass@localhost:5433/palmdb
 QDRANT_HOST=localhost
 QDRANT_PORT=6333
-QDRANT_COLLECTION_NAME=documents
+QDRANT_COLLECTION_NAME=documents_bge_base_en_v1_5
 REDIS_URL=redis://localhost:6379
 APP_ENV=development
+EMBEDDING_MODEL_NAME=BAAI/bge-base-en-v1.5
+EMBEDDING_DEVICE=cpu
+EMBEDDING_BATCH_SIZE=32
 EMBEDDING_DIM=768
 ```
 
@@ -111,14 +117,17 @@ Interactive docs: `http://localhost:8000/docs`
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GEMINI_API_KEY` | Yes | — | Google Gemini API key for LLM and embeddings |
+| `GEMINI_API_KEY` | Yes | — | Google Gemini API key for answers and booking extraction |
 | `DATABASE_URL` | Yes | — | Async PostgreSQL connection string (`postgresql+asyncpg://...`) |
 | `QDRANT_HOST` | No | `localhost` | Hostname of the Qdrant vector store |
 | `QDRANT_PORT` | No | `6333` | Port of the Qdrant vector store |
-| `QDRANT_COLLECTION_NAME` | No | `documents` | Name of the Qdrant collection used to store embeddings |
+| `QDRANT_COLLECTION_NAME` | No | `documents_bge_base_en_v1_5` | Name of the Qdrant collection used to store local BGE embeddings |
 | `REDIS_URL` | No | `redis://localhost:6379` | Redis connection URL for session history storage |
 | `APP_ENV` | No | `development` | Application environment; enables SQL logging in `development` |
-| `EMBEDDING_DIM` | No | `768` | Embedding output dimensionality requested from Gemini |
+| `EMBEDDING_MODEL_NAME` | No | `BAAI/bge-base-en-v1.5` | Local sentence-transformers model |
+| `EMBEDDING_DEVICE` | No | `cpu` | Device used for local embedding inference |
+| `EMBEDDING_BATCH_SIZE` | No | `32` | Texts encoded per local inference batch |
+| `EMBEDDING_DIM` | No | `768` | BGE embedding dimensions stored in Qdrant |
 
 ---
 
@@ -138,7 +147,7 @@ Accepts a `.pdf` or `.txt` file, extracts text, chunks it, generates embeddings,
 **Example**
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/ingest \
+curl -sS -X POST http://localhost:8000/api/v1/ingest \
   -F "file=@/path/to/document.pdf" \
   -F "strategy=recursive" \
   | python -m json.tool
@@ -161,7 +170,7 @@ curl -s -X POST http://localhost:8000/api/v1/ingest \
 
 ### `POST /api/v1/chat` — Conversational Q&A
 
-Embeds the user query, retrieves the most relevant chunks from Qdrant, and generates a grounded answer using Gemini. Maintains multi-turn conversation history in Redis. Automatically detects and processes interview booking intent.
+Embeds the user query locally with BGE, retrieves the most relevant chunks from Qdrant, and generates a grounded answer using Gemini. Maintains multi-turn conversation history in Redis. Automatically detects and processes interview booking intent.
 
 **Request** — `application/json`
 
@@ -173,7 +182,7 @@ Embeds the user query, retrieves the most relevant chunks from Qdrant, and gener
 **Example**
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id": "user-123", "query": "What is the refund policy?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -211,7 +220,7 @@ is running at `http://localhost:8000`.
 Use recursive chunking for a fast general-purpose ingestion:
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/ingest \
+curl -sS -X POST http://localhost:8000/api/v1/ingest \
   -F "file=@sample.pdf" \
   -F "strategy=recursive" \
   | python -m json.tool
@@ -220,7 +229,7 @@ curl -s -X POST http://localhost:8000/api/v1/ingest \
 To test topic-boundary detection instead, run:
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/ingest \
+curl -sS -X POST http://localhost:8000/api/v1/ingest \
   -F "file=@sample.pdf" \
   -F "strategy=semantic" \
   | python -m json.tool
@@ -235,7 +244,7 @@ directly, including readable Unicode punctuation.
 **Question 1: What is the title of the research paper?**
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"sample-pdf-session","query":"What is the title of the research paper?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -244,7 +253,7 @@ curl -s -X POST http://localhost:8000/api/v1/chat \
 **Question 2: What percentage of students started using mobile devices for English learning at university?**
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"sample-pdf-session","query":"What percentage of students started using mobile devices for English learning at university?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -253,7 +262,7 @@ curl -s -X POST http://localhost:8000/api/v1/chat \
 **Question 3: How did Holec define learner autonomy?**
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"sample-pdf-session","query":"How did Holec define learner autonomy?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -262,7 +271,7 @@ curl -s -X POST http://localhost:8000/api/v1/chat \
 **Question 4: Why did students prefer using mobile devices for learning English?**
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"sample-pdf-session","query":"Why did students prefer using mobile devices for learning English?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -271,7 +280,7 @@ curl -s -X POST http://localhost:8000/api/v1/chat \
 **Question 5: What evidence suggests that mobile devices promoted autonomous learning?**
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"sample-pdf-session","query":"What evidence suggests that mobile devices promoted autonomous learning?"}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -283,7 +292,7 @@ Use a separate session ID for the booking flow. This payload includes all four
 required fields: name, email, date, and time.
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -sS -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"session_id":"booking-demo-session","query":"I would like to book an interview. My name is Jane Doe, my email is jane@example.com, and I am available on 2026-06-10 at 14:00."}' \
   | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
@@ -314,14 +323,16 @@ windows. It prefers paragraphs, then sentences, then words.
 
 ### `semantic`
 
-Embeds adjacent sentences with Gemini and starts a new chunk when cosine
+Embeds adjacent sentences locally with BGE and starts a new chunk when cosine
 similarity drops below the configured topic-boundary threshold. Oversized
 chunks fall back to the recursive splitter.
 
 - **Maximum size:** 300 words
 - **Similarity threshold:** 0.65
 - **Best for:** Reports and documents containing multiple topics
-- **Trade-off:** Additional Gemini embedding calls make ingestion slower
+- **Optimization:** Sentence embeddings run locally on CPU in batches of 32
+- **Trade-off:** Semantic analysis takes longer than recursive chunking, but it
+  has no embedding API cost or rate limits
 
 ---
 
@@ -352,6 +363,24 @@ The user can provide these fields across multiple turns — the system accumulat
 ## Health Checks
 
 ```bash
-curl -s http://localhost:8000/ | python -m json.tool
-curl -s http://localhost:8000/health | python -m json.tool
+curl -sS http://localhost:8000/ | python -m json.tool
+curl -sS http://localhost:8000/health | python -m json.tool
 ```
+
+---
+
+## Troubleshooting
+
+### Gemini API returns `503 Service Unavailable`
+
+If chat returns:
+
+```json
+{
+  "detail": "Gemini API access was denied. Check GEMINI_API_KEY and the Google AI project status."
+}
+```
+
+the configured Gemini project has been denied access. Create or select a
+working Gemini API key, update `GEMINI_API_KEY` in `.env`, and restart the API.
+This is an upstream project-access issue rather than a chunking failure.

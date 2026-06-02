@@ -127,7 +127,7 @@ async def semantic_chunk(
     similarity_threshold: float = SEMANTIC_SIMILARITY_THRESHOLD,
 ) -> list[str]:
     """
-    Group adjacent sentences dynamically using cosine similarity thresholds.
+    Group adjacent sentences dynamically using cosine similarity.
     """
     _validate_window(max_words, overlap_words)
     if not -1.0 <= similarity_threshold <= 1.0:
@@ -165,15 +165,8 @@ async def semantic_chunk(
                     )
                 )
 
-            # Carry over the last sentence as semantic overlap to preserve chunk boundaries
-            overlap_sentence = current_sentences[-1] if current_sentences else None
-
             current_sentences = []
             current_word_count = 0
-
-            if overlap_sentence and not exceeds_budget:
-                current_sentences.append(overlap_sentence)
-                current_word_count = len(overlap_sentence.split())
 
         current_sentences.append(sentence)
         current_word_count += sentence_words
