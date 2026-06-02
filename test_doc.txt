@@ -1,0 +1,6 @@
+John Smith is a software engineer with 5 years of experience in Python and FastAPI.
+He has worked at Google and Amazon on large scale distributed systems.
+He holds a Bachelor's degree in Computer Science from MIT.
+His skills include Python, FastAPI, Docker, Kubernetes, PostgreSQL, and Redis.
+He is available for interviews on weekdays between 9am and 5pm.
+His email is john.smith@email.com.

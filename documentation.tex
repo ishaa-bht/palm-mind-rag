@@ -1,0 +1,431 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{xurl}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+
+\definecolor{primary}{HTML}{1A1A2E}
+\definecolor{accent}{HTML}{4F8EF7}
+\definecolor{codebg}{HTML}{F5F7FA}
+\definecolor{codeframe}{HTML}{D1D5DB}
+\definecolor{commentcolor}{HTML}{6A737D}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=accent,
+    urlcolor=accent,
+    citecolor=accent,
+    pdftitle={RAG Automation API - Technical Documentation},
+    pdfauthor={Isha Bhattarai},
+}
+
+\titleformat{\section}
+  {\Large\bfseries\color{primary}}
+  {\thesection}{1em}{}[\titlerule]
+
+\titleformat{\subsection}
+  {\large\bfseries\color{primary}}
+  {\thesubsection}{1em}{}
+
+\titlespacing*{\section}{0pt}{2.2em}{0.9em}
+\titlespacing*{\subsection}{0pt}{1.5em}{0.6em}
+
+\lstdefinestyle{code}{
+    backgroundcolor=\color{codebg},
+    frame=single,
+    rulecolor=\color{codeframe},
+    basicstyle=\ttfamily\footnotesize,
+    columns=fullflexible,
+    breaklines=true,
+    breakatwhitespace=false,
+    keepspaces=true,
+    showstringspaces=false,
+    tabsize=4,
+    xleftmargin=8pt,
+    xrightmargin=8pt,
+    aboveskip=8pt,
+    belowskip=8pt,
+}
+\lstset{style=code}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\setlist{itemsep=0.25em, topsep=0.35em}
+\renewcommand{\arraystretch}{1.2}
+\urlstyle{same}
+\raggedbottom
+
+\pagestyle{fancy}
+\setlength{\headheight}{14.5pt}
+\fancyhf{}
+\fancyhead[L]{\small\color{primary}\textbf{RAG Automation API}}
+\fancyhead[R]{\small\color{primary}Technical Documentation}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\begin{document}
+
+\begin{titlepage}
+    \centering
+    \vspace*{3cm}
+
+    {\Huge\bfseries\color{primary}RAG Automation API\par}
+    \vspace{0.6cm}
+    {\Large\color{accent}A FastAPI Backend for Document Ingestion and Conversational RAG\par}
+    \vspace{1.5cm}
+    \rule{0.7\linewidth}{0.5pt}\par
+    \vspace{1cm}
+    {\large Technical Documentation\par}
+    \vspace{2cm}
+
+    {\large\textbf{Isha Bhattarai}\par}
+    \vspace{0.3cm}
+    {\normalsize\href{mailto:ishabhattarai21@gmail.com}{ishabhattarai21@gmail.com}\par}
+
+    \vfill
+    {\normalsize June 1, 2026\par}
+\end{titlepage}
+
+\begin{abstract}
+RAG Automation API is a modular FastAPI backend for document ingestion and
+retrieval-augmented generation. It accepts PDF and TXT documents, extracts and
+chunks their text using a selectable strategy, generates Gemini embeddings, and
+stores vectors in Qdrant. The conversational API retrieves relevant context
+without using \texttt{RetrievalQAChain}, preserves multi-turn chat history in
+Redis, and uses an LLM to detect and persist interview bookings in PostgreSQL.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{Overview}
+
+The project provides two REST APIs:
+
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Document ingestion}: upload a \texttt{.pdf} or \texttt{.txt}
+    file, extract text, select a chunking strategy, generate embeddings, store
+    vectors, and save document metadata.
+    \item \textbf{Conversational RAG}: ask document-grounded questions, retain
+    Redis-backed conversation history, resolve follow-up questions, and store
+    LLM-detected interview bookings.
+\end{itemize}
+
+The implementation does not use FAISS, Chroma, a user interface, or
+\texttt{RetrievalQAChain}. Retrieval and prompt construction are implemented
+directly in the application services.
+
+\subsection{Technology stack}
+
+\begin{center}
+\begin{tabularx}{\textwidth}{L{3.4cm} L{4.8cm} Y}
+    \toprule
+    \textbf{Component} & \textbf{Technology} & \textbf{Purpose} \\
+    \midrule
+    API framework     & FastAPI                 & Async REST endpoints \\
+    LLM               & Gemini 2.5 Flash        & Answers and booking extraction \\
+    Embeddings        & Gemini embedding-001    & 768-dimensional vectors \\
+    Vector database   & Qdrant                  & Similarity search \\
+    Session memory    & Redis                   & Multi-turn chat history \\
+    Relational DB     & PostgreSQL              & Metadata and bookings \\
+    ORM and migrations& SQLAlchemy and Alembic  & Persistence management \\
+    PDF parser        & PyMuPDF                 & PDF text extraction \\
+    Tokeniser         & NLTK Punkt              & Sentence-based chunking \\
+    \bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Architecture}
+
+\subsection{Ingestion flow}
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item The client uploads a PDF or TXT document and selects
+    \texttt{fixed} or \texttt{sentence} chunking.
+    \item FastAPI validates the extension and extracts text.
+    \item The chunker splits extracted text with the selected strategy.
+    \item Gemini generates a vector for each chunk using the
+    \texttt{retrieval\_document} task type.
+    \item Qdrant stores vectors with document ID, filename, and chunk text.
+    \item PostgreSQL stores document metadata.
+\end{enumerate}
+
+\subsection{Conversational RAG flow}
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item The client sends a \texttt{session\_id} and query.
+    \item Redis loads the recent conversation history for that session.
+    \item Gemini checks the current query and history for interview-booking
+    intent and the required fields.
+    \item If a complete booking is found, PostgreSQL stores it and the API
+    returns a confirmation.
+    \item Otherwise, Gemini embeds the query using the
+    \texttt{retrieval\_query} task type.
+    \item Qdrant compares the query vector with stored chunk vectors using
+    cosine similarity and returns the five most similar chunks.
+    \item The application builds a grounded prompt manually and Gemini
+    generates the answer.
+    \item Redis stores the user message and assistant response.
+\end{enumerate}
+
+\section{Environment setup}
+
+\subsection{Prerequisites}
+
+\begin{itemize}[leftmargin=1.5em]
+    \item Python 3.11 or higher
+    \item Docker and Docker Compose
+    \item A Gemini API key from
+    \href{https://aistudio.google.com/app/apikey}{Google AI Studio}
+\end{itemize}
+
+\subsection{Installation}
+
+\begin{lstlisting}[language=bash]
+git clone https://github.com/ishaa-bht/palm-mind-rag.git
+cd palm-mind-rag
+
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+\end{lstlisting}
+
+Create a \texttt{.env} file in the project root:
+
+\begin{lstlisting}
+GEMINI_API_KEY=your_gemini_api_key_here
+DATABASE_URL=postgresql+asyncpg://palmuser:palmpass@localhost:5433/palmdb
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+QDRANT_COLLECTION_NAME=documents
+REDIS_URL=redis://localhost:6379
+APP_ENV=development
+EMBEDDING_DIM=768
+\end{lstlisting}
+
+Start infrastructure, apply migrations, and run the API:
+
+\begin{lstlisting}[language=bash]
+docker compose up -d
+alembic upgrade head
+uvicorn app.main:app --reload
+\end{lstlisting}
+
+Swagger UI is available at \texttt{http://localhost:8000/docs}.
+
+\section{Module reference}
+
+\begin{tabularx}{\textwidth}{L{4.7cm} Y}
+    \toprule
+    \textbf{Module} & \textbf{Responsibility} \\
+    \midrule
+    \path{app/main.py} & Creates the FastAPI app, registers routers, and
+    initializes the Qdrant collection during startup. \\
+    \path{app/api/ingest.py} & Implements PDF and TXT ingestion, extraction,
+    chunking, embedding, vector upsert, and metadata persistence. \\
+    \path{app/api/chat.py} & Implements conversational retrieval, Redis
+    memory, LLM answers, and booking persistence. \\
+    \path{app/services/chunker.py} & Provides fixed-size overlapping chunks
+    and NLTK sentence-group chunks. \\
+    \path{app/services/embedder.py} & Generates document and query
+    embeddings with Gemini. \\
+    \path{app/services/vector_store.py} & Creates the Qdrant collection,
+    upserts embedded chunks, and retrieves the top five matches using cosine
+    similarity. \\
+    \path{app/services/memory.py} & Stores up to 20 Redis messages per
+    session with a one-hour inactivity TTL. \\
+    \path{app/services/llm.py} & Builds the custom grounded prompt and
+    generates answers without \texttt{RetrievalQAChain}. \\
+    \path{app/services/booking.py} & Extracts name, email, date, and time
+    from conversational booking intent. \\
+    \path{app/models/db_models.py} & Defines document metadata and booking
+    SQLAlchemy models. \\
+    \bottomrule
+\end{tabularx}
+
+\subsection{Chunking strategies}
+
+\begin{tabularx}{\textwidth}{L{2.5cm} L{5cm} Y}
+    \toprule
+    \textbf{Strategy} & \textbf{Configuration} & \textbf{Recommended use} \\
+    \midrule
+    \texttt{fixed} & 500 characters, 50-character overlap &
+    Dense or irregular text \\
+    \texttt{sentence} & Up to 5 NLTK-tokenised sentences &
+    Structured prose and FAQs \\
+    \bottomrule
+\end{tabularx}
+
+\subsection{Vector retrieval}
+
+Qdrant stores one 768-dimensional Gemini embedding for each document chunk.
+During chat, the application embeds the user's query and performs a
+\textbf{cosine-similarity search}. Qdrant ranks stored chunk vectors by their
+directional similarity to the query vector, and the API sends the top five
+matching chunks to Gemini as grounded context.
+
+\begin{center}
+\begin{tabular}{L{5cm} L{8cm}}
+    \toprule
+    \textbf{Parameter} & \textbf{Value} \\
+    \midrule
+    Vector database & Qdrant \\
+    Distance metric & Cosine similarity \\
+    Embedding dimensions & 768 \\
+    Retrieved chunks per query & 5 \\
+    \bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Database schema}
+
+\begin{tabularx}{\textwidth}{L{3.5cm} Y}
+    \toprule
+    \textbf{Table} & \textbf{Stored fields} \\
+    \midrule
+    \texttt{document\_metadata} &
+    \texttt{id}, \texttt{filename}, \texttt{file\_type},
+    \texttt{chunking\_strategy}, \texttt{chunk\_count},
+    \texttt{uploaded\_at} \\
+    \texttt{bookings} &
+    \texttt{id}, \texttt{name}, \texttt{email}, \texttt{date},
+    \texttt{time}, \texttt{session\_id}, \texttt{created\_at} \\
+    \bottomrule
+\end{tabularx}
+
+\section{API reference}
+
+\subsection{POST /api/v1/ingest}
+
+Uploads and processes a document using multipart form data.
+
+\begin{tabularx}{\textwidth}{L{2.5cm} L{2.5cm} Y}
+    \toprule
+    \textbf{Field} & \textbf{Type} & \textbf{Description} \\
+    \midrule
+    \texttt{file} & File & Required PDF or TXT file \\
+    \texttt{strategy} & String & Required: \texttt{fixed} or
+    \texttt{sentence} \\
+    \bottomrule
+\end{tabularx}
+
+\begin{lstlisting}[language=bash]
+curl -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@test_doc.txt" \
+  -F "strategy=sentence"
+\end{lstlisting}
+
+\subsection{POST /api/v1/chat}
+
+Answers questions using retrieved document context and Redis session history.
+
+\begin{lstlisting}[language=bash]
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"user-001","query":"What skills does John have?"}'
+\end{lstlisting}
+
+\subsection{Health endpoints}
+
+\begin{tabularx}{\textwidth}{L{3.5cm} Y}
+    \toprule
+    \textbf{Endpoint} & \textbf{Response} \\
+    \midrule
+    \texttt{GET /} & API status and message \\
+    \texttt{GET /health} & \texttt{\{"status":"healthy"\}} \\
+    \bottomrule
+\end{tabularx}
+
+\section{Testing}
+
+\subsection{Health check}
+
+\begin{lstlisting}[language=bash]
+curl http://localhost:8000/health
+# {"status":"healthy"}
+\end{lstlisting}
+
+\subsection{Ingestion with both strategies}
+
+\begin{lstlisting}[language=bash]
+curl -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@test_doc.txt" -F "strategy=fixed"
+
+curl -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@test_doc.txt" -F "strategy=sentence"
+\end{lstlisting}
+
+\subsection{Retrieval-grounded answer}
+
+\begin{lstlisting}[language=bash]
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"test-001","query":"What skills does John have?"}'
+\end{lstlisting}
+
+\subsection{Multi-turn memory}
+
+Use the same \texttt{session\_id} for a follow-up question:
+
+\begin{lstlisting}[language=bash]
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"test-001","query":"Where did he work?"}'
+\end{lstlisting}
+
+\subsection{Interview booking}
+
+\begin{lstlisting}[language=bash]
+curl -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"booking-001","query":"Book an interview for Jane Doe, jane@example.com, on 2026-06-10 at 14:00."}'
+\end{lstlisting}
+
+Inspect saved records from the PostgreSQL container:
+
+\begin{lstlisting}[language=bash]
+docker compose exec postgres \
+  psql -U palmuser -d palmdb \
+  -c "SELECT * FROM bookings ORDER BY created_at DESC;"
+\end{lstlisting}
+
+\section{Design decisions}
+
+\begin{itemize}[leftmargin=1.5em]
+    \item \textbf{Custom RAG pipeline}: retrieval, context formatting, and
+    prompting are explicit application steps instead of a framework chain.
+    \item \textbf{Qdrant vector store}: vectors and payload metadata are
+    persisted in a dedicated similarity-search database. Cosine similarity is
+    used to retrieve the five chunks most relevant to each query.
+    \item \textbf{Redis session memory}: short-lived chat history supports
+    follow-up questions while keeping the API stateless.
+    \item \textbf{PostgreSQL persistence}: structured document and booking
+    records are managed with SQLAlchemy and Alembic.
+    \item \textbf{Selectable chunking}: callers can choose predictable
+    character windows or sentence-aware grouping based on document shape.
+\end{itemize}
+
+\section{Conclusion}
+
+RAG Automation API meets the core backend requirements for document ingestion,
+custom retrieval-grounded conversation, Redis-backed multi-turn memory, and
+LLM-assisted interview booking. Its modular service boundaries allow each
+integration to be tested and improved independently while keeping the public
+API compact.
+
+\end{document}
