@@ -12,8 +12,8 @@ class DocumentMetadata(Base):
         String, primary_key=True, default=lambda: str(uuid.uuid4())
     )
     filename: Mapped[str] = mapped_column(String, nullable=False)
-    file_type: Mapped[str] = mapped_column(String, nullable=False)         # pdf or txt
-    chunking_strategy: Mapped[str] = mapped_column(String, nullable=False) # fixed or sentence
+    file_type: Mapped[str] = mapped_column(String, nullable=False)  # pdf or txt
+    chunking_strategy: Mapped[str] = mapped_column(String, nullable=False)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

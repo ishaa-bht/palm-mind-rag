@@ -1,5 +1,4 @@
 import uuid
-import io
 import fitz  # PyMuPDF
 from fastapi import APIRouter, UploadFile, File, Form, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,7 +51,7 @@ def extract_text_from_txt(file_bytes: bytes) -> str:
 )
 async def ingest_document(
     file: UploadFile = File(..., description="PDF or TXT file to ingest"),
-    strategy: ChunkingStrategy = Form(..., description="Chunking strategy: 'fixed' or 'sentence'"),
+    strategy: ChunkingStrategy = Form(..., description="Chunking strategy: 'recursive' or 'semantic'"),
     db: AsyncSession = Depends(get_db),
 ) -> IngestResponse:
     """
@@ -96,7 +95,7 @@ async def ingest_document(
         )
 
     # ── Step 4: Chunk text ──────────────────────────────────────────
-    chunks: list[str] = chunk_text(text, strategy)
+    chunks: list[str] = await chunk_text(text, strategy)
 
     if not chunks:
         raise HTTPException(
@@ -115,6 +114,7 @@ async def ingest_document(
         chunks=chunks,
         embeddings=embeddings,
         filename=filename,
+        strategy=strategy,
     )
 
     # ── Step 7: Save metadata to PostgreSQL ─────────────────────────

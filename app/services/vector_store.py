@@ -1,4 +1,5 @@
 import uuid
+import re
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance,
@@ -7,6 +8,7 @@ from qdrant_client.models import (
     ScoredPoint,
 )
 from app.core.config import settings
+from app.schemas.schemas import ChunkingStrategy
 
 
 # Single shared async client
@@ -14,6 +16,11 @@ client = AsyncQdrantClient(
     host=settings.qdrant_host,
     port=settings.qdrant_port,
 )
+
+
+def normalize_retrieved_text(text: str) -> str:
+    """Remove PDF line wrapping before retrieved text reaches the LLM prompt."""
+    return re.sub(r"\s+", " ", text).strip()
 
 
 async def init_qdrant_collection() -> None:
@@ -42,20 +49,25 @@ async def upsert_chunks(
     chunks: list[str],
     embeddings: list[list[float]],
     filename: str,
+    strategy: ChunkingStrategy,
 ) -> None:
     """
     Store chunks and their embeddings in Qdrant.
 
     Each point contains:
       - vector: embedding of the chunk
-      - payload: doc_id, chunk text, filename for retrieval
+      - payload: source and chunk metadata for retrieval inspection
 
     Args:
         doc_id: UUID of the parent document
         chunks: List of text chunks
         embeddings: Corresponding list of embedding vectors
         filename: Original filename for metadata
+        strategy: Chunking strategy selected for the document
     """
+    if len(chunks) != len(embeddings):
+        raise ValueError("Each chunk must have exactly one embedding.")
+
     points: list[PointStruct] = [
         PointStruct(
             id=str(uuid.uuid4()),
@@ -64,9 +76,12 @@ async def upsert_chunks(
                 "doc_id": doc_id,
                 "text": chunk,
                 "filename": filename,
+                "chunk_index": index,
+                "chunk_count": len(chunks),
+                "strategy": strategy.value,
             },
         )
-        for chunk, embedding in zip(chunks, embeddings)
+        for index, (chunk, embedding) in enumerate(zip(chunks, embeddings))
     ]
 
     await client.upsert(
@@ -95,4 +110,8 @@ async def search_similar(
         limit=top_k,
     )
 
-    return [hit.payload["text"] for hit in results if hit.payload]
+    return [
+        normalize_retrieved_text(hit.payload["text"])
+        for hit in results
+        if hit.payload and isinstance(hit.payload.get("text"), str)
+    ]

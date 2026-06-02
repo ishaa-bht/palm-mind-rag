@@ -145,7 +145,7 @@ directly in the application services.
     Relational DB     & PostgreSQL              & Metadata and bookings \\
     ORM and migrations& SQLAlchemy and Alembic  & Persistence management \\
     PDF parser        & PyMuPDF                 & PDF text extraction \\
-    Tokeniser         & NLTK Punkt              & Sentence-based chunking \\
+    Chunking          & Recursive and semantic  & Structure and topic boundaries \\
     \bottomrule
 \end{tabularx}
 \end{center}
@@ -156,12 +156,13 @@ directly in the application services.
 
 \begin{enumerate}[leftmargin=1.5em]
     \item The client uploads a PDF or TXT document and selects
-    \texttt{fixed} or \texttt{sentence} chunking.
+    \texttt{recursive} or \texttt{semantic} chunking.
     \item FastAPI validates the extension and extracts text.
     \item The chunker splits extracted text with the selected strategy.
     \item Gemini generates a vector for each chunk using the
     \texttt{retrieval\_document} task type.
-    \item Qdrant stores vectors with document ID, filename, and chunk text.
+    \item Qdrant stores vectors with document ID, filename, strategy, chunk
+    index, chunk count, and normalized chunk text.
     \item PostgreSQL stores document metadata.
 \end{enumerate}
 
@@ -178,6 +179,8 @@ directly in the application services.
     \texttt{retrieval\_query} task type.
     \item Qdrant compares the query vector with stored chunk vectors using
     cosine similarity and returns the five most similar chunks.
+    \item Retrieved text is normalized before prompt construction so legacy
+    PDF line wrapping does not appear in generated answers.
     \item The application builds a grounded prompt manually and Gemini
     generates the answer.
     \item Redis stores the user message and assistant response.
@@ -240,13 +243,13 @@ Swagger UI is available at \texttt{http://localhost:8000/docs}.
     chunking, embedding, vector upsert, and metadata persistence. \\
     \path{app/api/chat.py} & Implements conversational retrieval, Redis
     memory, LLM answers, and booking persistence. \\
-    \path{app/services/chunker.py} & Provides fixed-size overlapping chunks
-    and NLTK sentence-group chunks. \\
+    \path{app/services/chunker.py} & Provides recursive structure-aware chunks
+    and Gemini-powered semantic topic chunks. \\
     \path{app/services/embedder.py} & Generates document and query
     embeddings with Gemini. \\
     \path{app/services/vector_store.py} & Creates the Qdrant collection,
-    upserts embedded chunks, and retrieves the top five matches using cosine
-    similarity. \\
+    upserts chunks with retrieval metadata, normalizes retrieved PDF text, and
+    returns the top five matches using cosine similarity. \\
     \path{app/services/memory.py} & Stores up to 20 Redis messages per
     session with a one-hour inactivity TTL. \\
     \path{app/services/llm.py} & Builds the custom grounded prompt and
@@ -264,10 +267,10 @@ Swagger UI is available at \texttt{http://localhost:8000/docs}.
     \toprule
     \textbf{Strategy} & \textbf{Configuration} & \textbf{Recommended use} \\
     \midrule
-    \texttt{fixed} & 500 characters, 50-character overlap &
-    Dense or irregular text \\
-    \texttt{sentence} & Up to 5 NLTK-tokenised sentences &
-    Structured prose and FAQs \\
+    \texttt{recursive} & Paragraph, sentence, and word fallbacks; maximum 300
+    words with 45-word overlap & General-purpose ingestion \\
+    \texttt{semantic} & Gemini sentence embeddings; cosine boundary threshold
+    of 0.65; one-sentence overlap & Multi-topic reports and research \\
     \bottomrule
 \end{tabularx}
 
@@ -277,7 +280,10 @@ Qdrant stores one 768-dimensional Gemini embedding for each document chunk.
 During chat, the application embeds the user's query and performs a
 \textbf{cosine-similarity search}. Qdrant ranks stored chunk vectors by their
 directional similarity to the query vector, and the API sends the top five
-matching chunks to Gemini as grounded context.
+matching chunks to Gemini as grounded context. Each Qdrant payload stores
+\texttt{doc\_id}, \texttt{filename}, \texttt{chunk\_index},
+\texttt{chunk\_count}, \texttt{strategy}, and \texttt{text}. Retrieved text is
+normalized before it reaches the LLM prompt to remove PDF line-wrap artifacts.
 
 \begin{center}
 \begin{tabular}{L{5cm} L{8cm}}
@@ -319,15 +325,16 @@ Uploads and processes a document using multipart form data.
     \textbf{Field} & \textbf{Type} & \textbf{Description} \\
     \midrule
     \texttt{file} & File & Required PDF or TXT file \\
-    \texttt{strategy} & String & Required: \texttt{fixed} or
-    \texttt{sentence} \\
+    \texttt{strategy} & String & Required: \texttt{recursive} or
+    \texttt{semantic} \\
     \bottomrule
 \end{tabularx}
 
 \begin{lstlisting}[language=bash]
-curl -X POST http://localhost:8000/api/v1/ingest \
+curl -s -X POST http://localhost:8000/api/v1/ingest \
   -F "file=@test_doc.txt" \
-  -F "strategy=sentence"
+  -F "strategy=recursive" \
+  | python -m json.tool
 \end{lstlisting}
 
 \subsection{POST /api/v1/chat}
@@ -335,9 +342,10 @@ curl -X POST http://localhost:8000/api/v1/ingest \
 Answers questions using retrieved document context and Redis session history.
 
 \begin{lstlisting}[language=bash]
-curl -X POST http://localhost:8000/api/v1/chat \
+curl -s -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"user-001","query":"What skills does John have?"}'
+  -d '{"session_id":"user-001","query":"What skills does John have?"}' \
+  | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
 \end{lstlisting}
 
 \subsection{Health endpoints}
@@ -356,26 +364,28 @@ curl -X POST http://localhost:8000/api/v1/chat \
 \subsection{Health check}
 
 \begin{lstlisting}[language=bash]
-curl http://localhost:8000/health
-# {"status":"healthy"}
+curl -s http://localhost:8000/health | python -m json.tool
 \end{lstlisting}
 
 \subsection{Ingestion with both strategies}
 
 \begin{lstlisting}[language=bash]
-curl -X POST http://localhost:8000/api/v1/ingest \
-  -F "file=@test_doc.txt" -F "strategy=fixed"
+curl -s -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@test_doc.txt" -F "strategy=recursive" \
+  | python -m json.tool
 
-curl -X POST http://localhost:8000/api/v1/ingest \
-  -F "file=@test_doc.txt" -F "strategy=sentence"
+curl -s -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@test_doc.txt" -F "strategy=semantic" \
+  | python -m json.tool
 \end{lstlisting}
 
 \subsection{Retrieval-grounded answer}
 
 \begin{lstlisting}[language=bash]
-curl -X POST http://localhost:8000/api/v1/chat \
+curl -s -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"test-001","query":"What skills does John have?"}'
+  -d '{"session_id":"test-001","query":"What skills does John have?"}' \
+  | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
 \end{lstlisting}
 
 \subsection{Multi-turn memory}
@@ -383,17 +393,19 @@ curl -X POST http://localhost:8000/api/v1/chat \
 Use the same \texttt{session\_id} for a follow-up question:
 
 \begin{lstlisting}[language=bash]
-curl -X POST http://localhost:8000/api/v1/chat \
+curl -s -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"test-001","query":"Where did he work?"}'
+  -d '{"session_id":"test-001","query":"Where did he work?"}' \
+  | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
 \end{lstlisting}
 
 \subsection{Interview booking}
 
 \begin{lstlisting}[language=bash]
-curl -X POST http://localhost:8000/api/v1/chat \
+curl -s -X POST http://localhost:8000/api/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"session_id":"booking-001","query":"Book an interview for Jane Doe, jane@example.com, on 2026-06-10 at 14:00."}'
+  -d '{"session_id":"booking-001","query":"Book an interview for Jane Doe, jane@example.com, on 2026-06-10 at 14:00."}' \
+  | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
 \end{lstlisting}
 
 Inspect saved records from the PostgreSQL container:
@@ -401,7 +413,40 @@ Inspect saved records from the PostgreSQL container:
 \begin{lstlisting}[language=bash]
 docker compose exec postgres \
   psql -U palmuser -d palmdb \
-  -c "SELECT * FROM bookings ORDER BY created_at DESC;"
+  -c "SELECT name, email, date, time, session_id, created_at FROM bookings ORDER BY created_at DESC LIMIT 5;"
+\end{lstlisting}
+
+\subsection{Sample PDF demonstration}
+
+The repository includes \texttt{sample.pdf} for a copy-pasteable demonstration
+of document ingestion and grounded question answering. Ingest it with:
+
+\begin{lstlisting}[language=bash]
+curl -s -X POST http://localhost:8000/api/v1/ingest \
+  -F "file=@sample.pdf" \
+  -F "strategy=recursive" \
+  | python -m json.tool
+\end{lstlisting}
+
+Then reuse \texttt{sample-pdf-session} while asking:
+
+\begin{enumerate}[leftmargin=1.5em]
+    \item What is the title of the research paper?
+    \item What percentage of students started using mobile devices for English
+    learning at university?
+    \item How did Holec define learner autonomy?
+    \item Why did students prefer using mobile devices for learning English?
+    \item What evidence suggests that mobile devices promoted autonomous
+    learning?
+\end{enumerate}
+
+For example:
+
+\begin{lstlisting}[language=bash]
+curl -s -X POST http://localhost:8000/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"sample-pdf-session","query":"How did Holec define learner autonomy?"}' \
+  | python -c 'import json, sys; print(json.load(sys.stdin)["answer"])'
 \end{lstlisting}
 
 \section{Design decisions}
@@ -416,8 +461,9 @@ docker compose exec postgres \
     follow-up questions while keeping the API stateless.
     \item \textbf{PostgreSQL persistence}: structured document and booking
     records are managed with SQLAlchemy and Alembic.
-    \item \textbf{Selectable chunking}: callers can choose predictable
-    character windows or sentence-aware grouping based on document shape.
+    \item \textbf{Selectable chunking}: callers can choose efficient recursive
+    boundary-aware chunks or higher-cost semantic topic detection based on
+    retrieval-quality needs.
 \end{itemize}
 
 \section{Conclusion}

@@ -1,13 +1,12 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from enum import Enum
 from datetime import datetime
-from typing import Optional
 
 
 # ── Chunking Strategy Enum ──────────────────────────────────────────
 class ChunkingStrategy(str, Enum):
-    fixed = "fixed"
-    sentence = "sentence"
+    recursive = "recursive"
+    semantic = "semantic"
 
 
 # ── Ingest Schemas ──────────────────────────────────────────────────
