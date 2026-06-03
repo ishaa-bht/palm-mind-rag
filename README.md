@@ -384,3 +384,14 @@ If chat returns:
 the configured Gemini project has been denied access. Create or select a
 working Gemini API key, update `GEMINI_API_KEY` in `.env`, and restart the API.
 This is an upstream project-access issue rather than a chunking failure.
+
+---
+
+## API Documentation
+
+FastAPI provides generated API documentation for testing the REST endpoints:
+
+- Swagger UI: `http://localhost:8000/docs`
+
+
+These are framework-generated API docs, not a custom application UI.
