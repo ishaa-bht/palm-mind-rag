@@ -41,6 +41,9 @@ app/
 │   └── vector_store.py  # Qdrant collection and similarity search
 └── main.py              # FastAPI app, lifespan, routers, CORS
 alembic/                 # Database migrations
+docs/
+├── documentation.tex    # Technical documentation source
+└── documentation.pdf    # Compiled technical documentation
 docker-compose.yml       # PostgreSQL, Qdrant, Redis services
 ```
 
